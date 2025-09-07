@@ -1,0 +1,3 @@
+[submodule "atari800"]
+	path = atari800
+	url = https://github.com/atari800/atari800.git
