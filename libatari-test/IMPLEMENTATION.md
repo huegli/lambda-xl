@@ -3,12 +3,12 @@
 
 ## Step 1: Create an XCode project that outputs a "Hello World" string in Swift ✅
 
-## Step 2: Add Objective-C Bridging header
+## Step 2: Add Objective-C Bridging header ✅
 - Create a dummy C file that exports the following functions
   - A function that prints "Hello World" to StdOut
-  - A function that returns a, where <n> is an parameter of the function
+  - A function that returns <n>, where <n> is a parameter of the function
   - A function that takes a file name string as input, reads the file and outputs the first line to StdOut
-  - A function that take a struct of the following format as input and outputs the elements of the struct:
+  - A function that take a pointer to a struct of the following format as input and outputs the elements of the struct:
 ```
 typedef struct {
     unsigned char byte;
@@ -16,7 +16,7 @@ typedef struct {
     uint32_t long;
 } input_t
 ``` 
-  - A function that allocates a struct of the following format on the heap and initializes it with dummy data:
+  - A function that allocates a struct of the following format on the heap and initializes all elements with dummy data:
 ```
 typedef struct {
     union {

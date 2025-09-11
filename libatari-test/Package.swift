@@ -13,9 +13,13 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(
+            name: "CBridge",
+            path: "Sources/CBridge"
+        ),
         .executableTarget(
             name: "libatari-test",
-            dependencies: []
+            dependencies: ["CBridge"]
         ),
     ]
 )
