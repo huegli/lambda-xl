@@ -31,3 +31,9 @@ typedef struct {
 - In main.swift, call all of the above C functions using the Objective-C Bridging functionality
   - Using the returned pointer to a struct of type state_t, print out the values a, b and the 2nd element of storage as well as the first 8 elements of bytes
 
+## Step 3: Add an Objective-C Bridging header for all the functions defined in the libatari800 library ✅
+- The C include file for the libatari800 library can be found at ../atari800/src/libatari800/libatari800.h
+- All the C source files for the libatari800 library can be found under ../atari800/src/libatari800/*
+- Incorporate the libatari800 library into libatari-test
+- In main.swift, call the libatari800_init function and the libatari800_exit function. Do not remove the existing content in main.swift
+- For libatari800_init, use "-atari" as arguments

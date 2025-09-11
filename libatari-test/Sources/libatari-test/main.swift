@@ -47,3 +47,26 @@ print()
 
 // Free the allocated memory
 free_state_struct(statePtr)
+
+// Initialize libatari800 with specified arguments
+let args = ["-atari"]
+var cArgs = args.map { strdup($0) }
+
+let initResult = libatari800_init(-1, &cArgs)
+if initResult == 0 {
+    print("libatari800 initialized successfully")
+} else {
+    print("libatari800 initialization failed with code: \(initResult)")
+    if let errorMsg = libatari800_error_message() {
+        print("Error message: \(String(cString: errorMsg))")
+    }
+}
+
+// Exit libatari800
+libatari800_exit()
+print("libatari800 exited")
+
+// Clean up allocated strings
+for arg in cArgs {
+    free(arg)
+}

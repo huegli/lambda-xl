@@ -25,4 +25,9 @@ void print_input_struct(input_t* input);
 state_t* allocate_state_struct(void);
 void free_state_struct(state_t* state);
 
+// libatari800 function stubs for now
+int libatari800_init(int argc, char **argv);
+const char *libatari800_error_message(void);
+void libatari800_exit(void);
+
 #endif // BRIDGE_H

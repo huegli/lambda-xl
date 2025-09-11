@@ -15,7 +15,10 @@ let package = Package(
     targets: [
         .target(
             name: "CBridge",
-            path: "Sources/CBridge"
+            path: "Sources/CBridge",
+            cSettings: [
+                .define("LIBATARI800")
+            ]
         ),
         .executableTarget(
             name: "libatari-test",
