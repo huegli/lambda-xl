@@ -18,6 +18,9 @@ let package = Package(
             path: "Sources/CBridge",
             cSettings: [
                 .define("LIBATARI800")
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L.", "-latari800"])
             ]
         ),
         .executableTarget(

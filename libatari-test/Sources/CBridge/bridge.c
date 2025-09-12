@@ -57,20 +57,3 @@ void free_state_struct(state_t* state) {
     }
 }
 
-// libatari800 function stubs for testing
-int libatari800_init(int argc, char **argv) {
-    printf("libatari800_init called with %d arguments\n", argc);
-    for (int i = 0; i < argc; i++) {
-        printf("  arg[%d]: %s\n", i, argv[i]);
-    }
-    // For now, just return success
-    return 0;
-}
-
-const char *libatari800_error_message(void) {
-    return "No error (stub implementation)";
-}
-
-void libatari800_exit(void) {
-    printf("libatari800_exit called\n");
-}

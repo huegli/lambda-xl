@@ -33,7 +33,10 @@ typedef struct {
 
 ## Step 3: Add an Objective-C Bridging header for all the functions defined in the libatari800 library ✅
 - The C include file for the libatari800 library can be found at ../atari800/src/libatari800/libatari800.h
-- All the C source files for the libatari800 library can be found under ../atari800/src/libatari800/*
-- Incorporate the libatari800 library into libatari-test
+- Steps to build ../atari800/src/libatari800.a
+  1. cd ../atari800/
+  2. ./configure --target=libatari800
+  3. make
+- Statically link ../atari800/libatari800.a into libatari-test
 - In main.swift, call the libatari800_init function and the libatari800_exit function. Do not remove the existing content in main.swift
 - For libatari800_init, use "-atari" as arguments

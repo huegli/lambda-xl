@@ -49,10 +49,10 @@ print()
 free_state_struct(statePtr)
 
 // Initialize libatari800 with specified arguments
-let args = ["-atari"]
+let args = ["-atari", "-config", "libatari.cfg"]
 var cArgs = args.map { strdup($0) }
 
-let initResult = libatari800_init(-1, &cArgs)
+let initResult = libatari800_init(Int32(cArgs.count), &cArgs)
 if initResult == 0 {
     print("libatari800 initialized successfully")
 } else {
