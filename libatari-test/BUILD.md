@@ -8,7 +8,28 @@
 
 ## Building the Project
 
-### Using Swift Package Manager (Recommended)
+### Step 4: Automatic Build with libatari800 Integration (Recommended)
+
+The project now includes automatic compilation of the libatari800 library as part of the build process.
+
+1. Navigate to the project directory:
+   ```bash
+   cd libatari-test
+   ```
+
+2. Build the project (automatically builds libatari800 first):
+   ```bash
+   ./build.sh
+   ```
+
+3. Run the project (builds and runs):
+   ```bash
+   ./run.sh
+   ```
+
+### Using Swift Package Manager (Manual)
+
+For manual builds without automatic libatari800 compilation:
 
 1. Navigate to the project directory:
    ```bash

@@ -40,3 +40,13 @@ typedef struct {
 - Statically link ../atari800/libatari800.a into libatari-test
 - In main.swift, call the libatari800_init function and the libatari800_exit function. Do not remove the existing content in main.swift
 - For libatari800_init, use "-atari" as arguments
+
+## Step 4: Make libatari800 library compilation part of the Swift project building ✅
+- Create a build mechanism that first ensures that ../atari800/libatari800.a is compiled correctly as a library before building libatari-test
+- Created `build_libatari800.sh` script to automatically build the libatari800 library with proper dependency checking
+- Created `build.sh` wrapper script that builds libatari800 first, then builds the Swift project
+- Created `run.sh` script for convenient build and run operations
+- Updated Package.swift to use correct library path (`../atari800/src`)
+- Updated BUILD.md with new build instructions
+  
+
