@@ -26,4 +26,9 @@ void print_input_struct(input_t* input);
 state_t* allocate_state_struct(void);
 void free_state_struct(state_t* state);
 
+// Helper functions to access emulator_state_t fields from Swift
+UBYTE* get_emulator_state_buffer(emulator_state_t* state);
+cpu_state_t* get_cpu_state(emulator_state_t* state);
+pc_state_t* get_pc_state(emulator_state_t* state);
+
 #endif // BRIDGE_H

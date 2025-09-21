@@ -57,3 +57,16 @@ void free_state_struct(state_t* state) {
     }
 }
 
+// Helper functions to access emulator_state_t fields from Swift
+UBYTE* get_emulator_state_buffer(emulator_state_t* state) {
+    return state->state;
+}
+
+cpu_state_t* get_cpu_state(emulator_state_t* state) {
+    return (cpu_state_t*)&state->state[state->tags.cpu];
+}
+
+pc_state_t* get_pc_state(emulator_state_t* state) {
+    return (pc_state_t*)&state->state[state->tags.pc];
+}
+

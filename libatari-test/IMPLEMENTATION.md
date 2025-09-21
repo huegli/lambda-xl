@@ -48,5 +48,11 @@ typedef struct {
 - Created `run.sh` script for convenient build and run operations
 - Updated Package.swift to use correct library path (`../atari800/src`)
 - Updated BUILD.md with new build instructions
-  
+
+## Step 5: Replicate the functionality of libatari800_test.c
+- Refer to ../atari800/src/libatari800/libatari800_test.c
+- Reimplement the same functionality calling the same functions from libatari800.h (library libatari800.a) in the main.swift file of libatari-test
+- The libatari800_init should be called with "-atari" and use the libatari.cfg configuration file
+- Verify that libatari-test works properly by making sure the output is similar to the one produced by the original libatari800_test.c file
+
 
