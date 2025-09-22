@@ -49,10 +49,29 @@ typedef struct {
 - Updated Package.swift to use correct library path (`../atari800/src`)
 - Updated BUILD.md with new build instructions
 
-## Step 5: Replicate the functionality of libatari800_test.c
+## Step 5: Replicate the functionality of libatari800_test.c ✅
 - Refer to ../atari800/src/libatari800/libatari800_test.c
 - Reimplement the same functionality calling the same functions from libatari800.h (library libatari800.a) in the main.swift file of libatari-test
 - The libatari800_init should be called with "-atari" and use the libatari.cfg configuration file
 - Verify that libatari-test works properly by making sure the output is similar to the one produced by the original libatari800_test.c file
 
+
+## Step 6: Graphical output of the emulated screen ✅
+- Remove the WAVWriter class and all functionality associated with it, do not check for a '-wav' command line argument ✅
+- Assume 'showScreen' is always true ✅
+- Remove all functionality from "print_hello_world" to "free_state_struct" ✅
+- Rather than using the debug_screen to output the emulated screen accessed by libatari800_get_screen_ptr() using textual representation, create a SwiftUI window that displays the entire 384x240 byte content as follows: ✅
+  - Each byte represents a pixel where the high 4 bits are the hue and the low 4 bits are the luminance ✅
+  - Each emulated pixel should be represented by a 16x16 square ✅
+- Update the SwiftUI window each time libatari800_next_frame is called ✅
+- The calling frequency for libatari800_next_frame should be 60 Hz ✅
+
+**Implementation Details:**
+- Created `AtariEmulator` class as an `ObservableObject` to manage emulation state
+- Implemented SwiftUI app structure with `AtariTestApp`, `ContentView`, and `AtariScreenView`
+- Used Canvas in SwiftUI to render the 384x240 pixel screen buffer
+- Pixel color decoding converts 4-bit hue and 4-bit luminance to HSB color space
+- Timer runs at 60 Hz to call `libatari800_next_frame()` and update display
+- Screen scales pixels appropriately to create visible 16x16 squares
+- Removed all Step 2 bridge functions and WAV output functionality as requested
 
