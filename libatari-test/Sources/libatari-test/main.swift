@@ -9,6 +9,7 @@ class AtariEmulator: ObservableObject {
     private var isRunning = false
     private var input = input_template_t()
     private var state = emulator_state_t()
+    private var lastFrameTime: CFAbsoluteTime = 0
 
     func start() {
         guard !isRunning else { return }
@@ -36,14 +37,17 @@ class AtariEmulator: ObservableObject {
 
         isRunning = true
 
-        // Start 60Hz timer for frame updates on main thread
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-            self?.updateFrame()
-        }
+        // Start 60Hz timer on a background thread to avoid being blocked by UI rendering
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
+            self?.timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+                self?.updateFrame()
+            }
 
-        // Ensure timer runs on main RunLoop for UI updates
-        if let timer = timer {
-            RunLoop.main.add(timer, forMode: .common)
+            // Keep the background thread's RunLoop alive
+            if let timer = self?.timer {
+                RunLoop.current.add(timer, forMode: .common)
+                RunLoop.current.run()
+            }
         }
 
         // Clean up allocated strings (skip the NULL terminator)
@@ -67,6 +71,11 @@ class AtariEmulator: ObservableObject {
     private func updateFrame() {
         guard isRunning else { return }
 
+        let frameStartTime = CFAbsoluteTimeGetCurrent()
+        let timeSinceLastFrame = lastFrameTime > 0 ? (frameStartTime - lastFrameTime) * 1000 : 0
+        lastFrameTime = frameStartTime
+
+        let startTime = CFAbsoluteTimeGetCurrent()
         libatari800_get_current_state(&state)
 
         // Get CPU and PC state using helper functions (for debugging if needed)
@@ -76,11 +85,10 @@ class AtariEmulator: ObservableObject {
         let cpu = cpuPtr!.pointee
         let pc = pcPtr!.pointee
 
+
         // Only print debug info occasionally to avoid performance impact
-        if libatari800_get_frame_number() % 60 == 0 {
-            print(String(format: "frame %d: A=%02x X=%02x Y=%02x SP=%02x SR=%02x PC=%04x",
-                         libatari800_get_frame_number(), cpu.A, cpu.X, cpu.Y, cpu.S, cpu.P, pc.PC))
-        }
+//        if libatari800_get_frame_number() % 60 == 0 {
+//        }
 
         libatari800_next_frame(&input)
 
@@ -98,6 +106,11 @@ class AtariEmulator: ObservableObject {
         if libatari800_get_frame_number() >= 200 {
             stop()
         }
+        
+        let executionTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000 // Convert to milliseconds
+        print(String(format: "frame %d: A=%02x X=%02x Y=%02x SP=%02x SR=%02x PC=%04x (one iteration took %.3f ms, time since last frame: %.3f ms)",
+                     libatari800_get_frame_number(), cpu.A, cpu.X, cpu.Y, cpu.S, cpu.P, pc.PC, executionTime, timeSinceLastFrame))
+
     }
 
     private func updateScreenData() {
