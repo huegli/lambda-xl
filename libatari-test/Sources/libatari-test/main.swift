@@ -5,72 +5,83 @@ import CBridge
 import Metal
 import MetalKit
 
+@MainActor
 class AtariEmulator: ObservableObject {
     @Published var screenData: [UInt8] = Array(repeating: 0, count: 384 * 240)
-    private var timer: Timer?
-    private var isRunning = false
-    private var input = input_template_t()
-    private var state = emulator_state_t()
-    private var lastFrameTime: CFAbsoluteTime = 0
+    
+    // State accessed from background - safe with our controlled access pattern
+    nonisolated(unsafe) private var emulationTask: Task<Void, Never>?
+    nonisolated(unsafe) private var isRunning = false
+    nonisolated(unsafe) private var input = input_template_t()
+    nonisolated(unsafe) private var state = emulator_state_t()
+    nonisolated(unsafe) private var lastFrameTime: CFAbsoluteTime = 0
+    
+    // Buffer for thread-safe screen updates
+    nonisolated(unsafe) private var screenBuffer: [UInt8] = Array(repeating: 0, count: 384 * 240)
 
     func start() {
         guard !isRunning else { return }
 
-        // Initialize libatari800 with the same arguments as the C test
-        let testArgs = ["-atari"]
-        var cArgs = testArgs.map { strdup($0) }
-        cArgs.append(nil)  // Add NULL terminator like C version
-
-        let initResult = libatari800_init(-1, &cArgs)
-        if initResult != 0 {
-            print("libatari800 initialization returned code: \(initResult)")
-            if let errorMsg = libatari800_error_message() {
-                print("Error message: \(String(cString: errorMsg))")
-            }
-            print("Error code from global: \(libatari800_error_code)")
-            print("Proceeding anyway to see if emulation works...")
-        }
-
-        // Clear input array
-        libatari800_clear_input_array(&input)
-
-        print("emulation: fps=\(libatari800_get_fps())")
-        print("sound: freq=\(libatari800_get_sound_frequency()), bytes/sample=\(libatari800_get_sound_sample_size()), channels=\(libatari800_get_num_sound_channels()), max buffer size=\(libatari800_get_sound_buffer_allocated_size())")
-
         isRunning = true
+        
+        // Start emulation on a background task
+        emulationTask = Task.detached { [weak self] in
+            // Initialize libatari800 with the same arguments as the C test
+            let testArgs = ["-atari"]
+            var cArgs = testArgs.map { strdup($0) }
+            cArgs.append(nil)  // Add NULL terminator like C version
 
-        // Start 60Hz timer on a background thread to avoid being blocked by UI rendering
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-                self?.updateFrame()
+            let initResult = libatari800_init(-1, &cArgs)
+            if initResult != 0 {
+                print("libatari800 initialization returned code: \(initResult)")
+                if let errorMsg = libatari800_error_message() {
+                    print("Error message: \(String(cString: errorMsg))")
+                }
+                print("Proceeding anyway to see if emulation works...")
             }
 
-            // Keep the background thread's RunLoop alive
-            if let timer = self?.timer {
-                RunLoop.current.add(timer, forMode: .common)
-                RunLoop.current.run()
-            }
-        }
+            // Clear input array
+            guard let self = self else { return }
+            libatari800_clear_input_array(&self.input)
 
-        // Clean up allocated strings (skip the NULL terminator)
-        for arg in cArgs {
-            if let ptr = arg {
-                free(ptr)
+            print("emulation: fps=\(libatari800_get_fps())")
+            print("sound: freq=\(libatari800_get_sound_frequency()), bytes/sample=\(libatari800_get_sound_sample_size()), channels=\(libatari800_get_num_sound_channels()), max buffer size=\(libatari800_get_sound_buffer_allocated_size())")
+
+            // Clean up allocated strings (skip the NULL terminator)
+            for arg in cArgs {
+                if let ptr = arg {
+                    free(ptr)
+                }
             }
+            
+            // Run emulation loop at 60Hz
+            await self.runEmulationLoop()
         }
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        stopEmulation()
+    }
+    
+    nonisolated private func stopEmulation() {
+        emulationTask?.cancel()
 
         if isRunning {
             libatari800_exit()
             isRunning = false
         }
     }
+    
+    nonisolated private func runEmulationLoop() async {
+        while !Task.isCancelled && isRunning {
+            updateFrame()
+            
+            // Sleep for 60Hz timing (16.67ms)
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+    }
 
-    private func updateFrame() {
+    nonisolated private func updateFrame() {
         guard isRunning else { return }
 
         let frameStartTime = CFAbsoluteTimeGetCurrent()
@@ -89,10 +100,8 @@ class AtariEmulator: ObservableObject {
 
         libatari800_next_frame(&input)
 
-        // Update screen data on main thread
-        DispatchQueue.main.async { [weak self] in
-            self?.updateScreenData()
-        }
+        // Update screen data
+        updateScreenData()
 
         // Simulate key input after frame 100
         if libatari800_get_frame_number() > 100 {
@@ -101,7 +110,7 @@ class AtariEmulator: ObservableObject {
 
         // Stop after 200 frames for now
         if libatari800_get_frame_number() >= 200 {
-            stop()
+            stopEmulation()
         }
         
         let executionTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000 // Convert to milliseconds
@@ -109,20 +118,29 @@ class AtariEmulator: ObservableObject {
                      libatari800_get_frame_number(), cpu.A, cpu.X, cpu.Y, cpu.S, cpu.P, pc.PC, executionTime, timeSinceLastFrame))
     }
 
-    private func updateScreenData() {
+    nonisolated private func updateScreenData() {
         guard let screenPtr = libatari800_get_screen_ptr() else {
             print("Failed to get screen pointer")
             return
         }
 
-        // Efficiently copy the entire 384x240 screen buffer using bulk copy
-        screenData.withUnsafeMutableBufferPointer { buffer in
+        // Copy screen data directly to our buffer (nonisolated, safe)
+        screenBuffer.withUnsafeMutableBufferPointer { buffer in
             buffer.baseAddress?.initialize(from: screenPtr, count: 384 * 240)
+        }
+        
+        // Update the published property on main queue
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // We know this is safe because we're on the main queue
+            MainActor.assumeIsolated {
+                self.screenData = self.screenBuffer
+            }
         }
     }
 
     deinit {
-        stop()
+        stopEmulation()
     }
 }
 
@@ -224,7 +242,17 @@ class MetalAtariRenderer: NSObject, MTKViewDelegate {
         self.colorLookupBuffer = colorLookupBuffer
         
         // Load shaders and create pipeline
-        guard let library = device.makeDefaultLibrary() else {
+        // Try to load from bundle resource first
+        let library: MTLLibrary
+        if let bundle = Bundle.module.url(forResource: "Shaders", withExtension: "metal"),
+           let source = try? String(contentsOf: bundle, encoding: .utf8),
+           let lib = try? device.makeLibrary(source: source, options: nil) {
+            library = lib
+            print("Successfully loaded Metal shaders from bundle")
+        } else if let defaultLib = device.makeDefaultLibrary() {
+            library = defaultLib
+            print("Successfully loaded default Metal library")
+        } else {
             print("Failed to create shader library")
             return nil
         }

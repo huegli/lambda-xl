@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "libatari-test",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v15)
     ],
     products: [
         .executable(
@@ -28,6 +28,9 @@ let package = Package(
             dependencies: ["CBridge"],
             resources: [
                 .process("Shaders.metal")
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"])
             ]
         ),
     ]
