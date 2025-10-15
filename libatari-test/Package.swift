@@ -25,7 +25,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "libatari-test",
-            dependencies: ["CBridge"]
+            dependencies: ["CBridge"],
+            resources: [
+                .process("Shaders.metal")
+            ]
         ),
     ]
 )

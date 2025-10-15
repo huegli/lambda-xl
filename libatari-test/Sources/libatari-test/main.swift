@@ -2,6 +2,8 @@ import SwiftUI
 import Foundation
 import AppKit
 import CBridge
+import Metal
+import MetalKit
 
 class AtariEmulator: ObservableObject {
     @Published var screenData: [UInt8] = Array(repeating: 0, count: 384 * 240)
@@ -85,14 +87,9 @@ class AtariEmulator: ObservableObject {
         let cpu = cpuPtr!.pointee
         let pc = pcPtr!.pointee
 
-
-        // Only print debug info occasionally to avoid performance impact
-//        if libatari800_get_frame_number() % 60 == 0 {
-//        }
-
         libatari800_next_frame(&input)
 
-        // Update screen data on main thread for SwiftUI
+        // Update screen data on main thread
         DispatchQueue.main.async { [weak self] in
             self?.updateScreenData()
         }
@@ -110,7 +107,6 @@ class AtariEmulator: ObservableObject {
         let executionTime = (CFAbsoluteTimeGetCurrent() - startTime) * 1000 // Convert to milliseconds
         print(String(format: "frame %d: A=%02x X=%02x Y=%02x SP=%02x SR=%02x PC=%04x (one iteration took %.3f ms, time since last frame: %.3f ms)",
                      libatari800_get_frame_number(), cpu.A, cpu.X, cpu.Y, cpu.S, cpu.P, pc.PC, executionTime, timeSinceLastFrame))
-
     }
 
     private func updateScreenData() {
@@ -130,34 +126,70 @@ class AtariEmulator: ObservableObject {
     }
 }
 
-struct AtariScreenView: View {
-    @ObservedObject var emulator: AtariEmulator
-    @State private var drawCount: Int = 0
-
-    // Pre-computed lookup table for all 256 possible Atari pixel values as UInt32
-    // Each UInt32 contains RGBA packed as a single 32-bit value for fast writes
-    // Format: 0xAABBGGRR (little-endian RGBA)
-    private static let colorLookupTable: [UInt32] = {
-        var table = [UInt32]()
-        table.reserveCapacity(256)
-
+// Metal-based renderer for Atari screen
+class MetalAtariRenderer: NSObject, MTKViewDelegate {
+    let device: MTLDevice
+    let commandQueue: MTLCommandQueue
+    let pipelineState: MTLRenderPipelineState
+    let texture: MTLTexture
+    let colorLookupBuffer: MTLBuffer
+    
+    weak var emulator: AtariEmulator?
+    
+    private var drawCount: Int = 0
+    
+    init?(emulator: AtariEmulator) {
+        // Get default Metal device
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            print("Metal is not supported on this device")
+            return nil
+        }
+        
+        self.device = device
+        self.emulator = emulator
+        
+        // Create command queue
+        guard let commandQueue = device.makeCommandQueue() else {
+            print("Failed to create command queue")
+            return nil
+        }
+        self.commandQueue = commandQueue
+        
+        // Create texture for Atari screen (384x240, single channel)
+        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: 384,
+            height: 240,
+            mipmapped: false
+        )
+        textureDescriptor.usage = [.shaderRead]
+        
+        guard let texture = device.makeTexture(descriptor: textureDescriptor) else {
+            print("Failed to create texture")
+            return nil
+        }
+        self.texture = texture
+        
+        // Create color lookup table (256 RGBA colors)
+        var colorLookup = [SIMD4<Float>]()
+        colorLookup.reserveCapacity(256)
+        
         for pixelByte in 0..<256 {
-            let hue = (pixelByte >> 4) & 0x0F  // High 4 bits
-            let luminance = pixelByte & 0x0F   // Low 4 bits
-
-            // Convert to normalized values
+            let hue = (pixelByte >> 4) & 0x0F
+            let luminance = pixelByte & 0x0F
+            
             let h = Double(hue) / 15.0
             let s = 0.8
             let v = Double(luminance) / 15.0
-
-            // Direct HSV to RGB conversion (faster than going through Color/NSColor)
+            
+            // HSV to RGB conversion
             let c = v * s
             let x = c * (1.0 - abs((h * 6.0).truncatingRemainder(dividingBy: 2.0) - 1.0))
             let m = v - c
-
+            
             var r: Double = 0, g: Double = 0, b: Double = 0
             let hPrime = h * 6.0
-
+            
             if hPrime < 1.0 {
                 r = c; g = x; b = 0
             } else if hPrime < 2.0 {
@@ -171,101 +203,134 @@ struct AtariScreenView: View {
             } else {
                 r = c; g = 0; b = x
             }
-
-            let red = UInt32((r + m) * 255)
-            let green = UInt32((g + m) * 255)
-            let blue = UInt32((b + m) * 255)
-            let alpha: UInt32 = 255
-
-            // Pack RGBA into single UInt32 (little-endian: ABGR byte order)
-            let packedColor = (alpha << 24) | (blue << 16) | (green << 8) | red
-            table.append(packedColor)
+            
+            let color = SIMD4<Float>(
+                Float(r + m),
+                Float(g + m),
+                Float(b + m),
+                1.0
+            )
+            colorLookup.append(color)
         }
-
-        return table
-    }()
-
-    var body: some View {
-        let bodyStartTime = CFAbsoluteTimeGetCurrent()
-
-        return GeometryReader { geometry in
-            Canvas { context, size in
-                let canvasStartTime = CFAbsoluteTimeGetCurrent()
-
-                // Create bitmap data for the screen
-                let width = 384
-                let height = 240
-                let bytesPerPixel = 4 // RGBA
-                let bytesPerRow = width * bytesPerPixel
-                let totalBytes = height * bytesPerRow
-
-                var pixelData = [UInt8](repeating: 0, count: totalBytes)
-
-                let conversionStartTime = CFAbsoluteTimeGetCurrent()
-
-                // Ultra-fast conversion: write 32-bit pixels directly instead of 4 separate bytes
-                pixelData.withUnsafeMutableBytes { pixelBuffer in
-                    let pixelPtr = pixelBuffer.bindMemory(to: UInt32.self)
-
-                    emulator.screenData.withUnsafeBufferPointer { atariBuffer in
-                        guard let atariBase = atariBuffer.baseAddress else { return }
-
-                        // Single write per pixel (32-bit) instead of 4 writes (8-bit each)
-                        for i in 0..<(width * height) {
-                            pixelPtr[i] = Self.colorLookupTable[Int(atariBase[i])]
-                        }
-                    }
-                }
-
-                let conversionTime = (CFAbsoluteTimeGetCurrent() - conversionStartTime) * 1000
-
-                let imageCreationStartTime = CFAbsoluteTimeGetCurrent()
-
-                // Create CGImage from bitmap data
-                guard let dataProvider = CGDataProvider(data: Data(pixelData) as CFData),
-                      let cgImage = CGImage(
-                        width: width,
-                        height: height,
-                        bitsPerComponent: 8,
-                        bitsPerPixel: 32,
-                        bytesPerRow: bytesPerRow,
-                        space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                        provider: dataProvider,
-                        decode: nil,
-                        shouldInterpolate: false,
-                        intent: .defaultIntent
-                      ) else { return }
-
-                let imageCreationTime = (CFAbsoluteTimeGetCurrent() - imageCreationStartTime) * 1000
-
-                let drawStartTime = CFAbsoluteTimeGetCurrent()
-
-                // Draw the entire screen as one image, scaled to fit
-                let destRect = CGRect(origin: .zero, size: size)
-                context.draw(Image(cgImage, scale: 1.0, label: Text("Atari Screen")), in: destRect)
-
-                let drawTime = (CFAbsoluteTimeGetCurrent() - drawStartTime) * 1000
-                let totalCanvasTime = (CFAbsoluteTimeGetCurrent() - canvasStartTime) * 1000
-                let totalBodyTime = (CFAbsoluteTimeGetCurrent() - bodyStartTime) * 1000
-
-                // Print timing information
-                print(String(format: "AtariScreenView draw #%d: conversion=%.3f ms, image_creation=%.3f ms, draw=%.3f ms, total_canvas=%.3f ms, total_body=%.3f ms",
-                             drawCount, conversionTime, imageCreationTime, drawTime, totalCanvasTime, totalBodyTime))
-
-                // Increment draw count for next frame
-                DispatchQueue.main.async {
-                    drawCount += 1
-                }
-            }
+        
+        guard let colorLookupBuffer = device.makeBuffer(
+            bytes: colorLookup,
+            length: colorLookup.count * MemoryLayout<SIMD4<Float>>.stride,
+            options: .storageModeShared
+        ) else {
+            print("Failed to create color lookup buffer")
+            return nil
         }
-        .aspectRatio(384.0/240.0, contentMode: .fit)
-        .onAppear {
-            emulator.start()
+        self.colorLookupBuffer = colorLookupBuffer
+        
+        // Load shaders and create pipeline
+        guard let library = device.makeDefaultLibrary() else {
+            print("Failed to create shader library")
+            return nil
         }
-        .onDisappear {
-            emulator.stop()
+        
+        guard let vertexFunction = library.makeFunction(name: "vertexShader"),
+              let fragmentFunction = library.makeFunction(name: "fragmentShader") else {
+            print("Failed to load shader functions")
+            return nil
         }
+        
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = vertexFunction
+        pipelineDescriptor.fragmentFunction = fragmentFunction
+        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        
+        do {
+            self.pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+        } catch {
+            print("Failed to create pipeline state: \(error)")
+            return nil
+        }
+        
+        super.init()
+    }
+    
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // Handle resize if needed
+    }
+    
+    func draw(in view: MTKView) {
+        let frameStartTime = CFAbsoluteTimeGetCurrent()
+        
+        guard let emulator = emulator else { return }
+        
+        // Update texture with latest screen data
+        let uploadStartTime = CFAbsoluteTimeGetCurrent()
+        let region = MTLRegionMake2D(0, 0, 384, 240)
+        emulator.screenData.withUnsafeBytes { bytes in
+            texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: 384)
+        }
+        let uploadTime = (CFAbsoluteTimeGetCurrent() - uploadStartTime) * 1000
+        
+        // Create command buffer and render pass
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+            return
+        }
+        
+        let renderStartTime = CFAbsoluteTimeGetCurrent()
+        
+        renderEncoder.setRenderPipelineState(pipelineState)
+        renderEncoder.setFragmentTexture(texture, index: 0)
+        renderEncoder.setFragmentBuffer(colorLookupBuffer, offset: 0, index: 0)
+        
+        // Draw full-screen quad (6 vertices = 2 triangles)
+        renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        
+        renderEncoder.endEncoding()
+        
+        if let drawable = view.currentDrawable {
+            commandBuffer.present(drawable)
+        }
+        
+        commandBuffer.commit()
+        
+        let renderTime = (CFAbsoluteTimeGetCurrent() - renderStartTime) * 1000
+        let totalTime = (CFAbsoluteTimeGetCurrent() - frameStartTime) * 1000
+        
+        print(String(format: "MetalAtariRenderer draw #%d: upload=%.3f ms, render=%.3f ms, total=%.3f ms",
+                     drawCount, uploadTime, renderTime, totalTime))
+        
+        drawCount += 1
+    }
+}
+
+// SwiftUI wrapper for Metal view
+struct MetalAtariView: NSViewRepresentable {
+    let emulator: AtariEmulator
+    
+    func makeNSView(context: Context) -> MTKView {
+        let mtkView = MTKView()
+        mtkView.device = MTLCreateSystemDefaultDevice()
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        mtkView.preferredFramesPerSecond = 60
+        mtkView.enableSetNeedsDisplay = false
+        mtkView.isPaused = false
+        
+        if let renderer = MetalAtariRenderer(emulator: emulator) {
+            mtkView.delegate = renderer
+            context.coordinator.renderer = renderer
+        }
+        
+        return mtkView
+    }
+    
+    func updateNSView(_ nsView: MTKView, context: Context) {
+        // Update view if needed
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator {
+        var renderer: MetalAtariRenderer?
     }
 }
 
@@ -274,16 +339,22 @@ struct ContentView: View {
 
     var body: some View {
         VStack {
-            Text("Atari 800 Emulator")
+            Text("Atari 800 Emulator (Metal)")
                 .font(.title)
                 .padding()
 
-            AtariScreenView(emulator: emulator)
-                .frame(width: 384 * 2, height: 240 * 2) // 16x16 scaling
+            MetalAtariView(emulator: emulator)
+                .frame(width: 384 * 2, height: 240 * 2)
                 .border(Color.gray, width: 2)
                 .padding()
+                .onAppear {
+                    emulator.start()
+                }
+                .onDisappear {
+                    emulator.stop()
+                }
 
-            Text("Screen: 384x240 pixels")
+            Text("Screen: 384x240 pixels - Metal Rendering")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
