@@ -1,0 +1,16 @@
+# Build artifacts
+libatari800.a
+libatari800.dylib
+
+# Swift build artifacts
+.build/
+.swiftpm/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store

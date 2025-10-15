@@ -20,7 +20,11 @@ let package = Package(
                 .define("LIBATARI800")
             ],
             linkerSettings: [
-                .unsafeFlags(["-L../atari800/src", "-latari800"])
+                .unsafeFlags([
+                    "-L..",
+                    "-latari800",
+                    "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../../../.."
+                ])
             ]
         ),
         .executableTarget(
