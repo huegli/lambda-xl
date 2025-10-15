@@ -132,10 +132,66 @@ class AtariEmulator: ObservableObject {
 
 struct AtariScreenView: View {
     @ObservedObject var emulator: AtariEmulator
+    @State private var drawCount: Int = 0
+
+    // Pre-computed lookup table for all 256 possible Atari pixel values as UInt32
+    // Each UInt32 contains RGBA packed as a single 32-bit value for fast writes
+    // Format: 0xAABBGGRR (little-endian RGBA)
+    private static let colorLookupTable: [UInt32] = {
+        var table = [UInt32]()
+        table.reserveCapacity(256)
+
+        for pixelByte in 0..<256 {
+            let hue = (pixelByte >> 4) & 0x0F  // High 4 bits
+            let luminance = pixelByte & 0x0F   // Low 4 bits
+
+            // Convert to normalized values
+            let h = Double(hue) / 15.0
+            let s = 0.8
+            let v = Double(luminance) / 15.0
+
+            // Direct HSV to RGB conversion (faster than going through Color/NSColor)
+            let c = v * s
+            let x = c * (1.0 - abs((h * 6.0).truncatingRemainder(dividingBy: 2.0) - 1.0))
+            let m = v - c
+
+            var r: Double = 0, g: Double = 0, b: Double = 0
+            let hPrime = h * 6.0
+
+            if hPrime < 1.0 {
+                r = c; g = x; b = 0
+            } else if hPrime < 2.0 {
+                r = x; g = c; b = 0
+            } else if hPrime < 3.0 {
+                r = 0; g = c; b = x
+            } else if hPrime < 4.0 {
+                r = 0; g = x; b = c
+            } else if hPrime < 5.0 {
+                r = x; g = 0; b = c
+            } else {
+                r = c; g = 0; b = x
+            }
+
+            let red = UInt32((r + m) * 255)
+            let green = UInt32((g + m) * 255)
+            let blue = UInt32((b + m) * 255)
+            let alpha: UInt32 = 255
+
+            // Pack RGBA into single UInt32 (little-endian: ABGR byte order)
+            let packedColor = (alpha << 24) | (blue << 16) | (green << 8) | red
+            table.append(packedColor)
+        }
+
+        return table
+    }()
 
     var body: some View {
-        GeometryReader { geometry in
+        let bodyStartTime = CFAbsoluteTimeGetCurrent()
+
+        return GeometryReader { geometry in
             Canvas { context, size in
+                let canvasStartTime = CFAbsoluteTimeGetCurrent()
+
                 // Create bitmap data for the screen
                 let width = 384
                 let height = 240
@@ -145,22 +201,25 @@ struct AtariScreenView: View {
 
                 var pixelData = [UInt8](repeating: 0, count: totalBytes)
 
-                // Convert Atari screen data to RGBA bitmap
-                for y in 0..<height {
-                    for x in 0..<width {
-                        let atariPixel = emulator.screenData[y * width + x]
-                        let color = decodePixelColor(atariPixel)
+                let conversionStartTime = CFAbsoluteTimeGetCurrent()
 
-                        // Convert SwiftUI Color to RGBA components
-                        let rgba = getRGBAComponents(from: color)
-                        let pixelIndex = (y * width + x) * bytesPerPixel
+                // Ultra-fast conversion: write 32-bit pixels directly instead of 4 separate bytes
+                pixelData.withUnsafeMutableBytes { pixelBuffer in
+                    let pixelPtr = pixelBuffer.bindMemory(to: UInt32.self)
 
-                        pixelData[pixelIndex] = rgba.r     // Red
-                        pixelData[pixelIndex + 1] = rgba.g // Green
-                        pixelData[pixelIndex + 2] = rgba.b // Blue
-                        pixelData[pixelIndex + 3] = rgba.a // Alpha
+                    emulator.screenData.withUnsafeBufferPointer { atariBuffer in
+                        guard let atariBase = atariBuffer.baseAddress else { return }
+
+                        // Single write per pixel (32-bit) instead of 4 writes (8-bit each)
+                        for i in 0..<(width * height) {
+                            pixelPtr[i] = Self.colorLookupTable[Int(atariBase[i])]
+                        }
                     }
                 }
+
+                let conversionTime = (CFAbsoluteTimeGetCurrent() - conversionStartTime) * 1000
+
+                let imageCreationStartTime = CFAbsoluteTimeGetCurrent()
 
                 // Create CGImage from bitmap data
                 guard let dataProvider = CGDataProvider(data: Data(pixelData) as CFData),
@@ -178,9 +237,26 @@ struct AtariScreenView: View {
                         intent: .defaultIntent
                       ) else { return }
 
+                let imageCreationTime = (CFAbsoluteTimeGetCurrent() - imageCreationStartTime) * 1000
+
+                let drawStartTime = CFAbsoluteTimeGetCurrent()
+
                 // Draw the entire screen as one image, scaled to fit
                 let destRect = CGRect(origin: .zero, size: size)
                 context.draw(Image(cgImage, scale: 1.0, label: Text("Atari Screen")), in: destRect)
+
+                let drawTime = (CFAbsoluteTimeGetCurrent() - drawStartTime) * 1000
+                let totalCanvasTime = (CFAbsoluteTimeGetCurrent() - canvasStartTime) * 1000
+                let totalBodyTime = (CFAbsoluteTimeGetCurrent() - bodyStartTime) * 1000
+
+                // Print timing information
+                print(String(format: "AtariScreenView draw #%d: conversion=%.3f ms, image_creation=%.3f ms, draw=%.3f ms, total_canvas=%.3f ms, total_body=%.3f ms",
+                             drawCount, conversionTime, imageCreationTime, drawTime, totalCanvasTime, totalBodyTime))
+
+                // Increment draw count for next frame
+                DispatchQueue.main.async {
+                    drawCount += 1
+                }
             }
         }
         .aspectRatio(384.0/240.0, contentMode: .fit)
@@ -190,36 +266,6 @@ struct AtariScreenView: View {
         .onDisappear {
             emulator.stop()
         }
-    }
-
-    private func decodePixelColor(_ pixelByte: UInt8) -> Color {
-        let hue = (pixelByte >> 4) & 0x0F  // High 4 bits
-        let luminance = pixelByte & 0x0F   // Low 4 bits
-
-        // Convert to normalized values (0.0 to 1.0)
-        let normalizedHue = Double(hue) / 15.0
-        let normalizedLuminance = Double(luminance) / 15.0
-
-        // Create color using HSB color space
-        // Multiply hue by 360 degrees for full color wheel
-        return Color(hue: normalizedHue, saturation: 0.8, brightness: normalizedLuminance)
-    }
-
-    private func getRGBAComponents(from color: Color) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
-        // Convert SwiftUI Color to NSColor for component extraction
-        let nsColor = NSColor(color)
-
-        // Convert to RGB color space if needed
-        guard let rgbColor = nsColor.usingColorSpace(.deviceRGB) else {
-            return (0, 0, 0, 255) // Fallback to black
-        }
-
-        return (
-            r: UInt8(rgbColor.redComponent * 255),
-            g: UInt8(rgbColor.greenComponent * 255),
-            b: UInt8(rgbColor.blueComponent * 255),
-            a: UInt8(rgbColor.alphaComponent * 255)
-        )
     }
 }
 
